@@ -12,11 +12,14 @@ open import Data.List.Relation.Unary.Any as Any using (Any; here; there)
 open import Data.List.Relation.Unary.Any.Properties as Any using (¬Any[])
 open import Data.List.Relation.Unary.First as First using (First; toAny)
 open import Data.List.Relation.Unary.First.Properties as First using (All⇒¬First)
-open import Data.Nat using (ℕ; zero; suc)
+open import Data.Nat using (ℕ; zero; suc; _+_; _<′_; <′-base; <′-step)
+open import Data.Nat.Induction using (<′-wellFounded)
+open import Data.Nat.Properties using (+-comm; +-assoc; ≤⇒≤′; s≤′s; m≤n+m)
 open import Data.Product as Product using (∃-syntax; _×_; _,_; proj₁; proj₂)
 open import Data.Sum as Sum using (_⊎_; inj₁; inj₂; [_,_])
 open import Function using (id; _∘_; _⇔_; mk⇔; Equivalence)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; ≢-sym)
+open import Induction.WellFounded using (Acc; acc)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; cong; ≢-sym)
 open import Relation.Nullary.Decidable as Dec using (Dec; yes; no; _⊎-dec_; _×-dec_)
 open import Relation.Nullary.Negation using (¬_; contradiction; contraposition)
 
@@ -295,19 +298,97 @@ module _ {α} {ps : Pats αs} {P} where
 --------------------------------------------------------------------------------
 -- Usefulness checking algorithm
 
-{-# TERMINATING #-}
-useful? : (P : PatMat αs) (ps : Pats αs) → Dec (Useful P ps)
-useful? [] [] = yes useful-[]-[]
-useful? (_ ∷ _) [] = no ¬useful-∷-[]
-useful? P (∙ ∷ ps) with ∃missingCon? P
+data UsefulAcc : PatMat αs → Pats αs → Set where
+  stop-[] : ∀ {P} → UsefulAcc P []
+  step-∙ : ∀ {P : PatMat (α ∷ αs)} {ps}
+    → UsefulAcc (𝒟 P) ps
+    → (∀ {c} → UsefulAcc (𝒮 c P) (All.++⁺ ∙* ps))
+    → UsefulAcc P (∙ ∷ ps)
+  step-con : ∀ {c} {P} {rs : Pats (args α c)} {ps : Pats αs}
+    → UsefulAcc (𝒮 c P) (All.++⁺ rs ps)
+    → UsefulAcc P (con {α} c rs ∷ ps)
+  step-∣ : ∀ {P} {r₁ r₂ : Pat α} {ps : Pats αs}
+    → UsefulAcc P (r₁ ∷ ps)
+    → UsefulAcc P (r₂ ∷ ps)
+    → UsefulAcc P (r₁ ∣ r₂ ∷ ps)
+
+useful?-aux : ∀ (P : PatMat αs) ps
+  → UsefulAcc P ps
+  → Dec (Useful P ps)
+useful?-aux [] [] stop-[] = yes useful-[]-[]
+useful?-aux (_ ∷ _) [] stop-[] = no ¬useful-∷-[]
+useful?-aux P (∙ ∷ ps) (step-∙ hs₁ hs₂) with ∃missingCon? P
 ... | yes ∃c∉ΣP =
-      Dec.map′ (useful-∙-𝒟⁺ ∃c∉ΣP) useful-∙-𝒟⁻ (useful? (𝒟 P) ps)
+      Dec.map′ (useful-∙-𝒟⁺ ∃c∉ΣP) useful-∙-𝒟⁻ (useful?-aux (𝒟 P) ps hs₁)
 ... | no _ =
-      Dec.map useful-∙-𝒮⇔ (any? λ c → useful? (𝒮 c P) (All.++⁺ ∙* ps))
-useful? P (con c rs ∷ ps) =
-  Dec.map useful-con⇔ (useful? (𝒮 c P) (All.++⁺ rs ps))
-useful? P (r₁ ∣ r₂ ∷ ps) =
-  Dec.map useful-∣⇔ (useful? P (r₁ ∷ ps) ⊎-dec useful? P (r₂ ∷ ps))
+      Dec.map useful-∙-𝒮⇔ (any? λ c → useful?-aux (𝒮 c P) (All.++⁺ ∙* ps) hs₂)
+useful?-aux P (con c rs ∷ ps) (step-con hs) =
+  Dec.map useful-con⇔ (useful?-aux (𝒮 c P) (All.++⁺ rs ps) hs)
+useful?-aux P (r₁ ∣ r₂ ∷ ps) (step-∣ hs₁ hs₂) =
+  Dec.map
+    useful-∣⇔
+    (useful?-aux P (r₁ ∷ ps) hs₁ ⊎-dec useful?-aux P (r₂ ∷ ps) hs₂)
+
+--------------------------------------------------------------------------------
+-- The usefulness checking algorithm is terminating
+
+patSize patSize′ : Pat α → ℕ
+patsSize : Pats αs → ℕ
+
+patSize p = suc (patSize′ p)
+-- patSize′ returns the size of a pattern *minus 1*.
+-- Now it is obvious that the patSize is greater than 0.
+patSize′ ∙ = 0
+patSize′ (con c ps) = patsSize ps
+patSize′ (p ∣ q) = suc (patSize′ p + patSize′ q)
+
+patsSize [] = 0
+patsSize (p ∷ ps) = patSize p + patsSize ps
+
+patsSize-++ : (ps : Pats αs) (qs : Pats βs)
+  → patsSize (All.++⁺ ps qs) ≡ patsSize ps + patsSize qs
+patsSize-++ [] qs = refl
+patsSize-++ (p ∷ ps) qs rewrite patsSize-++ ps qs = sym (+-assoc (patSize p) _ _)
+
+lem1 : ∀ c (rs : Pats (args α c)) (ps : Pats βs)
+  → patsSize (All.++⁺ rs ps) <′ patsSize (con {α} c rs ∷ ps)
+lem1 c ps qs rewrite patsSize-++ ps qs = <′-base
+
+lem2 : ∀ (r₁ r₂ : Pat α) (ps : Pats αs)
+  → patsSize (r₁ ∷ ps) <′ patsSize (r₁ ∣ r₂ ∷ ps)
+lem2 r₁ r₂ ps
+  rewrite cong (_+ patsSize ps) (+-comm (patSize′ r₁) (patSize′ r₂))
+  rewrite +-assoc (patSize′ r₂) (patSize′ r₁) (patsSize ps) =
+  s≤′s (s≤′s (≤⇒≤′ (m≤n+m _ (patSize′ r₂))))
+
+lem3 : ∀ (r₁ r₂ : Pat α) (ps : Pats αs)
+  → patsSize (r₂ ∷ ps) <′ patsSize (r₁ ∣ r₂ ∷ ps)
+lem3 r₁ r₂ ps
+  rewrite +-assoc (patSize′ r₁) (patSize′ r₂) (patsSize ps) =
+  s≤′s (s≤′s (≤⇒≤′ (m≤n+m _ (patSize′ r₁))))
+
+∀usefulAcc-aux : ∀ (P : PatMat αs) ps
+  → Acc _<′_ (patsSize ps)
+  → UsefulAcc P ps
+∀usefulAcc-aux P [] (acc rs) = stop-[]
+∀usefulAcc-aux P (∙ ∷ ps) (acc hs) =
+  step-∙
+    (∀usefulAcc-aux (𝒟 P) ps (hs <′-base))
+    {!   !}
+∀usefulAcc-aux {α ∷ _} P (con c rs ∷ ps) (acc hs) =
+  step-con (∀usefulAcc-aux (𝒮 c P) (All.++⁺ rs ps) (hs (lem1 {α} c rs ps)))
+∀usefulAcc-aux P (r₁ ∣ r₂ ∷ ps) (acc hs) =
+  step-∣
+    (∀usefulAcc-aux P (r₁ ∷ ps) (hs (lem2 r₁ r₂ ps)))
+    (∀usefulAcc-aux P (r₂ ∷ ps) (hs (lem3 r₁ r₂ ps)))
+
+∀usefulAcc : ∀ (P : PatMat αs) ps → UsefulAcc P ps
+∀usefulAcc P ps = ∀usefulAcc-aux P ps (<′-wellFounded (patsSize ps))
+
+--------------------------------------------------------------------------------
+
+useful? : ∀ (P : PatMat αs) ps → Dec (Useful P ps)
+useful? P ps = useful?-aux P ps (∀usefulAcc P ps)
 
 exhaustive? : (P : PatMat αs) → Exhaustive P ⊎ NonExhaustive P
 exhaustive? P with useful? P ∙*
